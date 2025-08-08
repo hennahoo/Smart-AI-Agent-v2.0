@@ -550,6 +550,9 @@ class PDFGenerator:
             return f"PDF generation error: {str(e)}"
 
 
+
+
+
 class AIProviderManager:
     """Manages different AI providers and their APIs"""
     
@@ -584,7 +587,7 @@ class AIProviderManager:
                 "models": ["llama3", "mistral", "codellama", "llama2", "phi3", "qwen2"],
                 "requires_key": False,
                 "available": True,
-                "base_url": "http://localhost:11434"
+                "base_url": "http://localhost:5678"
             },
             "cohere": {
                 "name": "Cohere",
@@ -594,7 +597,17 @@ class AIProviderManager:
             },
             "huggingface": {
                 "name": "Hugging Face",
-                "models": ["microsoft/DialoGPT-large", "microsoft/DialoGPT-medium", "facebook/blenderbot-400M-distill"],
+                "models": [
+                    "unsloth/gpt-oss-20b-GGUF",
+                    "openai/gpt-oss-20b",
+                    "openai/gpt-oss-120b",
+                    "microsoft/DialoGPT-large", 
+                    "microsoft/DialoGPT-medium", 
+                    "facebook/blenderbot-400M-distill",
+                    "HuggingFaceH4/zephyr-7b-beta",
+                    "mistralai/Mistral-7B-Instruct-v0.1",
+                    "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO"
+                ],
                 "requires_key": True,
                 "available": True
             },
@@ -673,6 +686,209 @@ class AIProviderManager:
             return response.json()["choices"][0]["message"]["content"]
         else:
             return f"Groq virhe: {response.status_code}"
+
+    def _call_huggingface(self, model, messages, api_key, **kwargs):
+        """Call Hugging Face API"""
+        try:
+            # Hugging Face Inference API endpoint
+            api_url = f"https://api-inference.huggingface.co/models/{model}"
+            
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Convert messages to a single prompt for text generation models
+            prompt = ""
+            for message in messages:
+                if message["role"] == "system":
+                    prompt += f"System: {message['content']}\n"
+                elif message["role"] == "user":
+                    prompt += f"User: {message['content']}\n"
+                elif message["role"] == "assistant":
+                    prompt += f"Assistant: {message['content']}\n"
+            
+            prompt += "Assistant:"
+            
+            # Prepare the payload
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "max_new_tokens": kwargs.get('max_tokens', 500),
+                    "temperature": kwargs.get('temperature', 0.7),
+                    "return_full_text": False
+                },
+                "options": {
+                    "wait_for_model": True
+                }
+            }
+            
+            response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    return result[0].get("generated_text", "").strip()
+                else:
+                    return "Tyhjä vastaus Hugging Face API:sta"
+            elif response.status_code == 503:
+                return "Malli latautuu, yritä hetken kuluttua uudelleen"
+            else:
+                return f"Hugging Face API virhe: {response.status_code} - {response.text}"
+                
+        except requests.exceptions.Timeout:
+            return "Hugging Face API aikakatkaisu"
+        except requests.exceptions.RequestException as e:
+            return f"Hugging Face verkkovirhe: {str(e)}"
+        except Exception as e:
+            return f"Hugging Face virhe: {str(e)}"
+
+    # You need to add the other missing methods here:
+    # _call_anthropic, _call_gemini, _call_ollama, _call_cohere, _call_together
+
+    def _call_anthropic(self, model, messages, api_key, **kwargs):
+            """Call Anthropic API"""
+            if not ANTHROPIC_AVAILABLE:
+                return "Anthropic-kirjasto ei ole saatavilla"
+            
+            try:
+                client = anthropic.Anthropic(api_key=api_key)
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=kwargs.get('max_tokens', 500),
+                    temperature=kwargs.get('temperature', 0.7),
+                    messages=messages
+                )
+                return response.content[0].text
+            except Exception as e:
+                return f"Anthropic virhe: {str(e)}"
+
+    def _call_gemini(self, model, messages, api_key, **kwargs):
+            """Call Google Gemini API"""
+            if not GEMINI_AVAILABLE:
+                return "Gemini-kirjasto ei ole saatavilla"
+            
+            try:
+                genai.configure(api_key=api_key)
+                model_instance = genai.GenerativeModel(model)
+                
+                # Convert messages to a single prompt
+                prompt = ""
+                for message in messages:
+                    if message["role"] == "user":
+                        prompt += f"User: {message['content']}\n"
+                    elif message["role"] == "assistant":
+                        prompt += f"Assistant: {message['content']}\n"
+                
+                response = model_instance.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                return f"Gemini virhe: {str(e)}"
+
+    def _call_ollama(self, model, messages, **kwargs):
+            """Call Ollama API"""
+            try:
+                headers = {"Content-Type": "application/json"}
+                
+                # Convert messages to prompt
+                prompt = ""
+                for message in messages:
+                    if message["role"] == "user":
+                        prompt += f"User: {message['content']}\n"
+                    elif message["role"] == "assistant":
+                        prompt += f"Assistant: {message['content']}\n"
+                prompt += "Assistant:"
+                
+                data = {
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": kwargs.get('temperature', 0.7)
+                    }
+                }
+                
+                response = requests.post(
+                    "http://localhost:11434/api/generate",
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    return response.json().get("response", "")
+                else:
+                    return f"Ollama virhe: {response.status_code}"
+            except Exception as e:
+                return f"Ollama virhe: {str(e)}"
+
+    def _call_cohere(self, model, messages, api_key, **kwargs):
+            """Call Cohere API"""
+            try:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                # Convert messages to prompt
+                prompt = ""
+                for message in messages:
+                    if message["role"] == "user":
+                        prompt += f"User: {message['content']}\n"
+                    elif message["role"] == "assistant":
+                        prompt += f"Assistant: {message['content']}\n"
+                
+                data = {
+                    "model": model,
+                    "prompt": prompt,
+                    "max_tokens": kwargs.get('max_tokens', 500),
+                    "temperature": kwargs.get('temperature', 0.7)
+                }
+                
+                response = requests.post(
+                    "https://api.cohere.ai/v1/generate",
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    return response.json()["generations"][0]["text"]
+                else:
+                    return f"Cohere virhe: {response.status_code}"
+            except Exception as e:
+                return f"Cohere virhe: {str(e)}"
+
+    def _call_together(self, model, messages, api_key, **kwargs):
+            """Call Together AI API"""
+            try:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                data = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": kwargs.get('max_tokens', 500),
+                    "temperature": kwargs.get('temperature', 0.7)
+                }
+                
+                response = requests.post(
+                    "https://api.together.xyz/inference",
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    return response.json()["output"]["choices"][0]["text"]
+                else:
+                    return f"Together AI virhe: {response.status_code}"
+            except Exception as e:
+                return f"Together AI virhe: {str(e)}"
+
+
 
 
 class SmartAgent:
